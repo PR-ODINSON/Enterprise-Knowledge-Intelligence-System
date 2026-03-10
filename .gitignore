@@ -1,0 +1,111 @@
+# =============================================================
+# Enterprise Knowledge Intelligence System — .gitignore
+# Covers: Python/FastAPI backend + React/Vite frontend
+# =============================================================
+
+# =============================================================
+# Python
+# =============================================================
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+.env
+.env.*
+!.env.example
+
+# Distribution / packaging
+dist/
+build/
+*.egg-info/
+*.egg
+.eggs/
+wheels/
+MANIFEST
+
+# Pytest & coverage
+.pytest_cache/
+.cache/
+htmlcov/
+.coverage
+.coverage.*
+coverage.xml
+*.cover
+
+# Type checker / linter caches
+.mypy_cache/
+.ruff_cache/
+.pytype/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# =============================================================
+# HuggingFace model weights (can be gigabytes)
+# =============================================================
+enterprise_rag_system/models/
+# If you cache models globally via HF_HOME, that stays out of repo too.
+
+# =============================================================
+# Generated runtime data
+# =============================================================
+# FAISS binary index and metadata — rebuilt by POST /reindex
+enterprise_rag_system/data/faiss_index.bin
+enterprise_rag_system/data/metadata.json
+
+# Application logs
+enterprise_rag_system/logs/
+*.log
+
+# Uploaded documents (data/documents/) — keep the placeholder
+enterprise_rag_system/data/documents/*
+!enterprise_rag_system/data/documents/.gitkeep
+
+# =============================================================
+# Node / React / Vite frontend
+# =============================================================
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/
+
+# Local env overrides
+frontend/.env
+frontend/.env.*
+!frontend/.env.example
+
+# =============================================================
+# OS & editor artefacts
+# =============================================================
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Windows
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+
+# VS Code (keep workspace settings if you want to share them,
+# but ignore personal/local overrides)
+.vscode/settings.json
+.vscode/launch.json
+.vscode/*.code-workspace
+
+# JetBrains IDEs
+.idea/
+
+# =============================================================
+# Miscellaneous
+# =============================================================
+*.bak
+*.tmp
+*.swp
+*~
