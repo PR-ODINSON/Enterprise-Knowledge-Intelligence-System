@@ -17,7 +17,7 @@ from typing import List, Tuple
 import numpy as np
 from sentence_transformers import SentenceTransformer
 
-from app.config import EMBEDDING_DIMENSION, EMBEDDING_MODEL_NAME
+from app.config import EMBEDDING_DIMENSION, EMBEDDING_MODEL_NAME, EMBEDDING_DEVICE
 from utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -31,14 +31,16 @@ class Embedder:
     initialisation cost at import time.
     """
 
-    def __init__(self, model_name: str = EMBEDDING_MODEL_NAME) -> None:
+    def __init__(self, model_name: str = EMBEDDING_MODEL_NAME, device: str = EMBEDDING_DEVICE) -> None:
         """
         Args:
             model_name: HuggingFace / sentence-transformers model identifier.
+            device:     Torch device string, e.g. ``"cuda"`` or ``"cpu"``.
         """
         self.model_name = model_name
+        self.device = device
         self._model: SentenceTransformer | None = None
-        logger.info(f"Embedder configured — model: {model_name}")
+        logger.info(f"Embedder configured — model: {model_name}, device: {device}")
 
     # ------------------------------------------------------------------
     # Model access (lazy loading)
@@ -48,11 +50,15 @@ class Embedder:
     def model(self) -> SentenceTransformer:
         """Load and cache the sentence-transformers model on first access."""
         if self._model is None:
-            logger.info(f"Loading sentence-transformers model: {self.model_name}")
-            self._model = SentenceTransformer(self.model_name)
             logger.info(
-                f"Model loaded. Embedding dimension: "
-                f"{self._model.get_sentence_embedding_dimension()}"
+                f"Loading sentence-transformers model: {self.model_name} "
+                f"on device: {self.device}"
+            )
+            self._model = SentenceTransformer(self.model_name, device=self.device)
+            logger.info(
+                f"Embedder ready — dimension: "
+                f"{self._model.get_sentence_embedding_dimension()}, "
+                f"device: {self.device}"
             )
         return self._model
 

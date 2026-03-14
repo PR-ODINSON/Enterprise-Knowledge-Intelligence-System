@@ -29,6 +29,7 @@ from app.config import (
     LLM_MAX_NEW_TOKENS,
     LLM_MODEL_NAME,
     LLM_TEMPERATURE,
+    LLM_USE_4BIT,
 )
 from llm.prompt_templates import build_rag_prompt
 from utils.logger import get_logger
@@ -53,7 +54,7 @@ class LocalLLM:
         model_name: str = LLM_MODEL_NAME,
         max_new_tokens: int = LLM_MAX_NEW_TOKENS,
         temperature: float = LLM_TEMPERATURE,
-        use_4bit: bool = False,
+        use_4bit: bool = LLM_USE_4BIT,
     ) -> None:
         self.model_name = model_name
         self.max_new_tokens = max_new_tokens
@@ -95,6 +96,16 @@ class LocalLLM:
 
         device = self._resolve_device()
         logger.info(f"Compute device: {device}")
+
+        if device != "cpu" and torch.cuda.is_available():
+            gpu_name = torch.cuda.get_device_name(0)
+            total_vram = torch.cuda.get_device_properties(0).total_memory / (1024 ** 3)
+            free_vram = (torch.cuda.get_device_properties(0).total_memory
+                         - torch.cuda.memory_allocated(0)) / (1024 ** 3)
+            logger.info(
+                f"GPU: {gpu_name} | Total VRAM: {total_vram:.1f} GB "
+                f"| Free VRAM: {free_vram:.1f} GB"
+            )
 
         # --- Optional 4-bit quantisation --------------------------------
         quantization_config: Optional[BitsAndBytesConfig] = None
@@ -198,14 +209,30 @@ class LocalLLM:
         Determine the compute device to use for model inference.
 
         Returns:
-            ``"auto"`` when a CUDA GPU is available (lets Accelerate handle
-            distribution), or ``"cpu"`` otherwise.
+            ``"cuda"`` when a CUDA GPU is configured and available,
+            or ``"cpu"`` otherwise.
+
+        Raises:
+            RuntimeError: If LLM_DEVICE is set to ``"cuda"`` but no
+                CUDA-capable GPU is detected.
         """
-        if LLM_DEVICE == "auto":
-            if torch.cuda.is_available():
-                gpu_name = torch.cuda.get_device_name(0)
-                logger.info(f"CUDA GPU detected: {gpu_name}")
-                return "auto"
-            logger.info("No CUDA GPU detected — falling back to CPU")
+        if LLM_DEVICE == "cuda":
+            if not torch.cuda.is_available():
+                raise RuntimeError(
+                    "LLM_DEVICE is set to 'cuda' but torch.cuda.is_available() "
+                    "returned False. Install a CUDA-enabled PyTorch wheel or "
+                    "set LLM_DEVICE='cpu' in config.py."
+                )
+            gpu_name = torch.cuda.get_device_name(0)
+            logger.info(f"CUDA GPU detected: {gpu_name}")
+            return "cuda"
+        if LLM_DEVICE == "cpu":
+            logger.info("Device explicitly set to CPU")
             return "cpu"
-        return LLM_DEVICE
+        # Legacy 'auto' fallback
+        if torch.cuda.is_available():
+            gpu_name = torch.cuda.get_device_name(0)
+            logger.info(f"CUDA GPU auto-detected: {gpu_name}")
+            return "cuda"
+        logger.info("No CUDA GPU detected — using CPU")
+        return "cpu"

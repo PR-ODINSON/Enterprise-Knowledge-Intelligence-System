@@ -28,6 +28,7 @@ for _dir in (DATA_DIR, DOCUMENTS_DIR, MODELS_DIR, LOGS_DIR):
 # BAAI/bge-small-en produces 384-dimensional embeddings; fast and efficient
 EMBEDDING_MODEL_NAME: str = "BAAI/bge-small-en"
 EMBEDDING_DIMENSION: int = 384
+EMBEDDING_DEVICE: str = "cuda"      # CUDA: confirmed working on RTX 5050 (sm_120) with torch 2.10.0+cu128
 
 # ---------------------------------------------------------------------------
 # Text Chunking Configuration
@@ -49,7 +50,8 @@ TOP_K_RESULTS: int = 5      # Default number of chunks to retrieve per query
 LLM_MODEL_NAME: str = "mistralai/Mistral-7B-Instruct-v0.2"
 LLM_MAX_NEW_TOKENS: int = 512       # Maximum tokens to generate per response
 LLM_TEMPERATURE: float = 0.1        # Low temperature for factual, deterministic answers
-LLM_DEVICE: str = "auto"            # "cuda", "cpu", or "auto" (auto-detects GPU)
+LLM_DEVICE: str = "cuda"            # CUDA: torch 2.10.0+cu128 supports RTX 5050 (Blackwell/sm_120)
+LLM_USE_4BIT: bool = True           # 4-bit NF4 quantisation via bitsandbytes (~5 GB VRAM vs ~14 GB float16)
 
 # ---------------------------------------------------------------------------
 # FAISS Persistence Paths

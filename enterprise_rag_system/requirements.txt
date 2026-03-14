@@ -23,23 +23,26 @@ pypdf>=4.1.0
 # ------------------------------------
 # Embeddings
 # ------------------------------------
-sentence-transformers>=3.0.0
+sentence-transformers>=5.3.0
 
 # ------------------------------------
 # Vector Store
 # ------------------------------------
 faiss-cpu>=1.8.0
-# Use faiss-gpu instead if you have a CUDA-capable GPU:
-# faiss-gpu>=1.7.4
+# NOTE: faiss-gpu is not published on PyPI for Windows.
+# Install via conda if GPU-accelerated vector search is needed:
+#   conda install -c conda-forge faiss-gpu
 
 # ------------------------------------
 # Local LLM — HuggingFace Transformers
 # ------------------------------------
-torch>=2.2.0
+# Install torch with CUDA 12.8 wheels (supports Blackwell/sm_120 — RTX 5050):
+# pip install torch==2.10.0+cu128 torchvision torchaudio --index-url https://download.pytorch.org/whl/cu128
+torch>=2.10.0
 transformers>=4.40.0
 accelerate>=0.29.0
-# Optional: 4-bit quantisation (requires CUDA GPU)
-# bitsandbytes>=0.43.0
+# 4-bit quantisation — required to fit Mistral-7B in 8 GB VRAM
+bitsandbytes>=0.43.0
 
 # ------------------------------------
 # Numerical Computing

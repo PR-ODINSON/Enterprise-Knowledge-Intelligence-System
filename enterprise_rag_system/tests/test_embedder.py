@@ -96,13 +96,13 @@ class TestEmbedder:
 
     def test_model_lazy_loading(self):
         """Model should not be loaded until the first encode call."""
-        emb = Embedder(model_name="mock-model")
+        emb = Embedder(model_name="mock-model", device="cpu")
         assert emb._model is None  # not loaded yet
 
         with patch("embedding.embedder.SentenceTransformer") as MockST:
             MockST.return_value = _make_mock_model()
             _ = emb.model  # trigger lazy load
-            MockST.assert_called_once_with("mock-model")
+            MockST.assert_called_once_with("mock-model", device="cpu")
 
     def test_embed_texts_dtype_float32(self, embedder: Embedder):
         """All outputs should be float32 regardless of mock."""
