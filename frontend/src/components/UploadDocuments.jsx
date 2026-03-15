@@ -12,7 +12,7 @@ import { uploadDocument } from '../api/apiClient.js'
  *   onUploadComplete (fn) — called after every successful upload
  *                           with the server response object.
  */
-export default function UploadDocuments({ onUploadComplete }) {
+export default function UploadDocuments({ onUploadComplete, collection = 'default' }) {
   const [files, setFiles]         = useState([])   // { file, status, progress, result, error }
   const [isDragging, setIsDragging] = useState(false)
   const inputRef = useRef(null)
@@ -62,6 +62,7 @@ export default function UploadDocuments({ onUploadComplete }) {
         try {
           const result = await uploadDocument(
             entry.file,
+            collection,
             ({ progress }) => {
               updateEntry(entry.id, { progress: Math.round((progress || 0) * 100) })
             },

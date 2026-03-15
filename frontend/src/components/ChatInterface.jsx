@@ -1,29 +1,33 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
-import { queryDocuments } from '../api/apiClient.js'
-
 /**
- * ChatInterface
+ * ChatInterface — Streaming edition
  * ─────────────────────────────────────────────────────────
- * Displays a scrollable conversation history and a text input
- * for submitting questions to the RAG pipeline.
- *
- * Each message is stored locally as:
- *   { id, role: 'user'|'assistant', text, timestamp }
+ * Displays a scrollable conversation history and a text input.
+ * Uses Server-Sent Events (SSE) to stream tokens in real time.
  *
  * Props:
- *   onAnswer (fn) — called with the full API response object
- *                   so siblings (AnswerViewer) can render details.
- *   hasDocuments (bool) — whether any documents have been indexed.
+ *   onAnswer       (fn)    — called with the full API response object
+ *   hasDocuments   (bool)  — whether any documents have been indexed
+ *   collection     (string)— currently selected collection
+ *   conversationId (string)— active conversation session UUID
  */
-export default function ChatInterface({ onAnswer, hasDocuments = true }) {
+import { useCallback, useEffect, useRef, useState } from 'react'
+import { streamQuery } from '../api/apiClient.js'
+
+export default function ChatInterface({
+  onAnswer,
+  hasDocuments = true,
+  collection = 'default',
+  conversationId = null,
+}) {
   const [messages, setMessages]   = useState([])
   const [question, setQuestion]   = useState('')
   const [isLoading, setIsLoading] = useState(false)
   const [error, setError]         = useState(null)
   const bottomRef  = useRef(null)
   const inputRef   = useRef(null)
+  const abortRef   = useRef(null)
 
-  // Scroll to the latest message whenever messages change
+  // Scroll to latest message
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [messages, isLoading])
@@ -31,7 +35,7 @@ export default function ChatInterface({ onAnswer, hasDocuments = true }) {
   // ── submit handler ───────────────────────────────────────
 
   const handleSubmit = useCallback(
-    async (e) => {
+    (e) => {
       e?.preventDefault()
       const trimmed = question.trim()
       if (!trimmed || isLoading) return
@@ -39,45 +43,76 @@ export default function ChatInterface({ onAnswer, hasDocuments = true }) {
       setError(null)
       setQuestion('')
 
-      // Append user message optimistically
       const userMsg = {
         id: Date.now(),
         role: 'user',
         text: trimmed,
         timestamp: new Date(),
       }
-      setMessages((prev) => [...prev, userMsg])
+
+      // Placeholder for assistant streaming message
+      const assistantId = Date.now() + 1
+      const assistantMsg = {
+        id: assistantId,
+        role: 'assistant',
+        text: '',
+        timestamp: new Date(),
+        streaming: true,
+        metadata: null,
+      }
+
+      setMessages((prev) => [...prev, userMsg, assistantMsg])
       setIsLoading(true)
 
-      try {
-        const data = await queryDocuments(trimmed)
+      const abort = streamQuery(
+        trimmed,
+        // onToken — append each token
+        (token) => {
+          setMessages((prev) =>
+            prev.map((m) =>
+              m.id === assistantId ? { ...m, text: m.text + token } : m,
+            ),
+          )
+        },
+        // onDone — finalize the message
+        ({ chunks, error: streamErr }) => {
+          setIsLoading(false)
+          abortRef.current = null
 
-        const assistantMsg = {
-          id: Date.now() + 1,
-          role: 'assistant',
-          text: data.answer,
-          timestamp: new Date(),
-          metadata: {
-            chunks: data.retrieved_chunks,
-            processingTime: data.processing_time_seconds,
-          },
-        }
-        setMessages((prev) => [...prev, assistantMsg])
-        onAnswer?.(data)
-      } catch (err) {
-        setError(err.userMessage || 'Failed to get an answer. Please try again.')
-        // Remove the optimistic user message on error so the user can retry
-        setMessages((prev) => prev.filter((m) => m.id !== userMsg.id))
-        setQuestion(trimmed)
-      } finally {
-        setIsLoading(false)
-        inputRef.current?.focus()
-      }
+          if (streamErr) {
+            setError(streamErr)
+            setMessages((prev) => prev.filter((m) => m.id !== assistantId))
+            setQuestion(trimmed)
+            return
+          }
+
+          setMessages((prev) =>
+            prev.map((m) =>
+              m.id === assistantId
+                ? { ...m, streaming: false, metadata: { chunks } }
+                : m,
+            ),
+          )
+
+          // Notify parent with a synthetic response object
+          onAnswer?.({
+            question: trimmed,
+            answer: '',  // parent only uses chunks from AnswerViewer
+            retrieved_chunks: chunks || [],
+          })
+
+          inputRef.current?.focus()
+        },
+        5,
+        collection,
+        conversationId,
+      )
+
+      abortRef.current = abort
     },
-    [question, isLoading, onAnswer],
+    [question, isLoading, onAnswer, collection, conversationId],
   )
 
-  // Submit on Enter (Shift+Enter inserts newline)
   const handleKeyDown = (e) => {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault()
@@ -86,8 +121,10 @@ export default function ChatInterface({ onAnswer, hasDocuments = true }) {
   }
 
   const clearConversation = () => {
+    abortRef.current?.()
     setMessages([])
     setError(null)
+    setIsLoading(false)
   }
 
   // ── render ───────────────────────────────────────────────
@@ -102,7 +139,9 @@ export default function ChatInterface({ onAnswer, hasDocuments = true }) {
           </div>
           <div>
             <h2 className="text-base font-semibold text-slate-800">Ask a Question</h2>
-            <p className="text-xs text-slate-500">Powered by Mistral-7B-Instruct</p>
+            <p className="text-xs text-slate-500">
+              Powered by Mistral-7B · <span className="font-medium text-violet-600">{collection}</span>
+            </p>
           </div>
         </div>
         {messages.length > 0 && (
@@ -121,19 +160,17 @@ export default function ChatInterface({ onAnswer, hasDocuments = true }) {
         <div className="flex items-start gap-2.5 rounded-xl border border-amber-200 bg-amber-50 p-3.5">
           <InfoIcon className="mt-0.5 h-4 w-4 shrink-0 text-amber-500" />
           <p className="text-xs text-amber-700">
-            No documents indexed yet. Upload documents above to enable question answering.
+            No documents indexed in <strong>{collection}</strong>. Upload documents above.
           </p>
         </div>
       )}
 
       {/* Conversation scroll area */}
-      <div className="flex max-h-72 min-h-[120px] flex-col gap-3 overflow-y-auto pr-1">
+      <div className="flex max-h-96 min-h-[140px] flex-col gap-3 overflow-y-auto pr-1">
         {messages.length === 0 && hasDocuments && (
           <div className="flex flex-1 flex-col items-center justify-center py-8 text-center">
             <SparklesIcon className="mb-2 h-8 w-8 text-slate-300" />
-            <p className="text-sm text-slate-400">
-              Ask anything about your uploaded documents.
-            </p>
+            <p className="text-sm text-slate-400">Ask anything about your documents.</p>
           </div>
         )}
 
@@ -141,8 +178,8 @@ export default function ChatInterface({ onAnswer, hasDocuments = true }) {
           <MessageBubble key={msg.id} message={msg} />
         ))}
 
-        {/* Thinking indicator */}
-        {isLoading && (
+        {/* Thinking indicator (before first token arrives) */}
+        {isLoading && messages[messages.length - 1]?.text === '' && (
           <div className="flex items-start gap-2.5">
             <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-violet-100">
               <BotIcon className="h-4 w-4 text-violet-600" />
@@ -172,11 +209,7 @@ export default function ChatInterface({ onAnswer, hasDocuments = true }) {
           value={question}
           onChange={(e) => setQuestion(e.target.value)}
           onKeyDown={handleKeyDown}
-          placeholder={
-            hasDocuments
-              ? 'Type your question and press Enter…'
-              : 'Upload documents first…'
-          }
+          placeholder={hasDocuments ? 'Type your question and press Enter…' : 'Upload documents first…'}
           disabled={!hasDocuments || isLoading}
           className="input resize-none leading-relaxed"
         />
@@ -198,25 +231,23 @@ export default function ChatInterface({ onAnswer, hasDocuments = true }) {
   )
 }
 
-// ── sub-components ───────────────────────────────────────────────────────────
+// ── sub-components ────────────────────────────────────────────────────────────
 
 function MessageBubble({ message }) {
   const isUser = message.role === 'user'
 
   return (
     <div className={`flex items-start gap-2.5 ${isUser ? 'flex-row-reverse' : ''}`}>
-      {/* Avatar */}
       <div
         className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-full
           ${isUser ? 'bg-brand-100' : 'bg-violet-100'}`}
       >
         {isUser
           ? <UserIcon className="h-4 w-4 text-brand-600" />
-          : <BotIcon  className="h-4 w-4 text-violet-600" />
+          : <BotIcon className="h-4 w-4 text-violet-600" />
         }
       </div>
 
-      {/* Bubble */}
       <div
         className={`max-w-[85%] rounded-2xl px-4 py-2.5 text-sm leading-relaxed
           ${isUser
@@ -224,12 +255,12 @@ function MessageBubble({ message }) {
             : 'rounded-tl-sm bg-slate-100 text-slate-800'
           }`}
       >
-        <p className="whitespace-pre-wrap">{message.text}</p>
-        {message.metadata?.processingTime != null && (
-          <p className={`mt-1.5 text-[11px] ${isUser ? 'text-brand-100' : 'text-slate-400'}`}>
-            {message.metadata.processingTime.toFixed(2)}s
-          </p>
-        )}
+        <p className="whitespace-pre-wrap">
+          {message.text}
+          {message.streaming && message.text && (
+            <span className="ml-0.5 inline-block h-4 w-0.5 animate-pulse bg-current align-middle opacity-75" />
+          )}
+        </p>
       </div>
     </div>
   )
@@ -249,7 +280,7 @@ function ThinkingDots() {
   )
 }
 
-// ── icons ────────────────────────────────────────────────────────────────────
+// ── icons ─────────────────────────────────────────────────────────────────────
 
 function ChatIcon({ className }) {
   return (
@@ -289,7 +320,7 @@ function SparklesIcon({ className }) {
   return (
     <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
       <path strokeLinecap="round" strokeLinejoin="round"
-        d="M9.813 15.904L9 18.75l-.813-2.846a4.5 4.5 0 00-3.09-3.09L2.25 12l2.846-.813a4.5 4.5 0 003.09-3.09L9 5.25l.813 2.846a4.5 4.5 0 003.09 3.09L15.75 12l-2.846.813a4.5 4.5 0 00-3.09 3.09zm8.906-9.5L18 6.75l-.719-1.294A3.375 3.375 0 0015 3.964V3.75A3.375 3.375 0 0011.625.375h-.75A3.375 3.375 0 007.5 3.75v.214a3.375 3.375 0 00-2.281 1.492L4.5 6.75l-.719-1.294A3.375 3.375 0 001.5 4.25V3.75A3.375 3.375 0 00-1.875.375h-.75" />
+        d="M9.813 15.904L9 18.75l-.813-2.846a4.5 4.5 0 00-3.09-3.09L2.25 12l2.846-.813a4.5 4.5 0 003.09-3.09L9 5.25l.813 2.846a4.5 4.5 0 003.09 3.09L15.75 12l-2.846.813a4.5 4.5 0 00-3.09 3.09z" />
     </svg>
   )
 }

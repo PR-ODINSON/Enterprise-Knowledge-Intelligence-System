@@ -14,15 +14,21 @@ The pipeline is initialised lazily on the first call to ``generate()`` to
 avoid paying the model-loading cost at import time or during app startup.
 """
 
-from typing import Optional
+import threading
+from typing import Generator, Optional
 
 import torch
 from transformers import (
     AutoModelForCausalLM,
     AutoTokenizer,
     BitsAndBytesConfig,
+    TextIteratorStreamer,
     pipeline,
 )
+
+# Enable TF32 globally for faster matmuls on Ampere+ GPUs (including Blackwell)
+torch.backends.cuda.matmul.allow_tf32 = True
+torch.backends.cudnn.allow_tf32 = True
 
 from app.config import (
     LLM_DEVICE,
@@ -111,9 +117,10 @@ class LocalLLM:
         quantization_config: Optional[BitsAndBytesConfig] = None
         if self.use_4bit and device != "cpu":
             try:
+                # bfloat16 compute dtype is significantly faster/better on newer architectures
                 quantization_config = BitsAndBytesConfig(
                     load_in_4bit=True,
-                    bnb_4bit_compute_dtype=torch.float16,
+                    bnb_4bit_compute_dtype=torch.bfloat16,
                     bnb_4bit_quant_type="nf4",
                     bnb_4bit_use_double_quant=True,
                 )
@@ -133,8 +140,9 @@ class LocalLLM:
         # --- Model loading ----------------------------------------------
         model_kwargs: dict = {
             "torch_dtype": (
-                torch.float16 if device != "cpu" else torch.float32
+                torch.bfloat16 if device != "cpu" else torch.float32
             ),
+            "attn_implementation": "sdpa",  # Native fast attention
         }
         if quantization_config:
             model_kwargs["quantization_config"] = quantization_config
@@ -185,19 +193,98 @@ class LocalLLM:
         logger.debug(f"Generated {len(generated_text)} chars")
         return generated_text
 
-    def answer_question(self, context: str, question: str) -> str:
+    def generate_stream(self, prompt: str) -> Generator[str, None, None]:
+        """
+        Stream token-by-token output for a given prompt.
+
+        Uses ``TextIteratorStreamer`` running model generation in a
+        background thread so the main thread can yield tokens as they arrive.
+
+        Args:
+            prompt: Fully formatted prompt string.
+
+        Yields:
+            Decoded token strings as they are generated.
+        """
+        logger.debug(f"Stream generation — prompt length: {len(prompt)} chars")
+
+        tokenizer = self.pipe.tokenizer
+        model = self.pipe.model
+
+        inputs = tokenizer(
+            prompt,
+            return_tensors="pt",
+            padding=True,
+            truncation=True,
+        ).to(model.device)
+
+        streamer = TextIteratorStreamer(
+            tokenizer,
+            skip_prompt=True,
+            skip_special_tokens=True,
+        )
+
+        gen_kwargs = {
+            **inputs,
+            "streamer": streamer,
+            "max_new_tokens": self.max_new_tokens,
+            "do_sample": self.temperature > 0,
+            "temperature": self.temperature if self.temperature > 0 else None,
+            "repetition_penalty": 1.1,
+        }
+        # Remove None values that some model configs reject
+        gen_kwargs = {k: v for k, v in gen_kwargs.items() if v is not None}
+
+        thread = threading.Thread(target=model.generate, kwargs=gen_kwargs)
+        thread.start()
+
+        for token in streamer:
+            yield token
+
+        thread.join()
+
+    def answer_question(
+        self,
+        context: str,
+        question: str,
+        history: str = "",
+    ) -> str:
         """
         High-level helper: build a RAG prompt and generate an answer.
 
         Args:
             context:  Retrieved document context string.
             question: User's natural-language question.
+            history:  Optional conversation history string (from ConversationMemory).
 
         Returns:
             Generated answer string.
         """
-        prompt = build_rag_prompt(context, question, use_instruction_format=True)
+        prompt = build_rag_prompt(
+            context, question,
+            use_instruction_format=True,
+            history=history,
+        )
         return self.generate(prompt)
+
+    def answer_question_stream(
+        self,
+        context: str,
+        question: str,
+        history: str = "",
+    ) -> Generator[str, None, None]:
+        """
+        Streaming variant of ``answer_question``.
+
+        Yields:
+            Token strings as they are generated.
+        """
+        prompt = build_rag_prompt(
+            context, question,
+            use_instruction_format=True,
+            history=history,
+        )
+        yield from self.generate_stream(prompt)
 
     # ------------------------------------------------------------------
     # Internal helpers

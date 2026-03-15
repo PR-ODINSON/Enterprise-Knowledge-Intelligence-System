@@ -73,12 +73,20 @@ class DocumentLoader:
             else self._extract_txt_text(file_path)
         )
 
+        # page_map: list of (page_number, text) tuples — used by chunker for citation
+        page_map = (
+            self._extract_pdf_pages(file_path)
+            if ext == ".pdf"
+            else [(1, text)]
+        )
+
         return {
             "text": text,
             "filename": file_path.name,
             "file_path": str(file_path),
             "file_type": ext,
             "char_count": len(text),
+            "page_map": page_map,
         }
 
     def load_all_documents(self) -> List[Dict[str, str]]:
@@ -177,6 +185,37 @@ class DocumentLoader:
         except Exception as exc:
             logger.warning(f"pdfplumber error on '{file_path.name}': {exc}")
             return ""
+
+    def _extract_pdf_pages(self, file_path: Path) -> List[tuple]:
+        """
+        Extract per-page text for citation purposes.
+
+        Returns:
+            List of (page_number, text) tuples (1-indexed).
+        """
+        pages = []
+        try:
+            with pdfplumber.open(file_path) as pdf:
+                for i, page in enumerate(pdf.pages, start=1):
+                    page_text = page.extract_text() or ""
+                    if page_text.strip():
+                        pages.append((i, page_text))
+        except Exception:
+            pass
+
+        if not pages:
+            # Fallback: try pypdf for page-level extraction
+            try:
+                from pypdf import PdfReader
+                reader = PdfReader(str(file_path))
+                for i, page in enumerate(reader.pages, start=1):
+                    t = page.extract_text() or ""
+                    if t.strip():
+                        pages.append((i, t))
+            except Exception:
+                pass
+
+        return pages if pages else [(1, "")]
 
     def _try_pypdf(self, file_path: Path) -> str:
         """Attempt text extraction with pypdf as a fallback."""

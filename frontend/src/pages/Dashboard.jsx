@@ -1,46 +1,88 @@
-import { useCallback, useEffect, useState } from 'react'
-import AnswerViewer from '../components/AnswerViewer.jsx'
-import ChatInterface from '../components/ChatInterface.jsx'
-import UploadDocuments from '../components/UploadDocuments.jsx'
-import { listDocuments } from '../api/apiClient.js'
-
 /**
  * Dashboard
  * ─────────────────────────────────────────────────────────
  * Full-page layout combining:
- *   Top    → UploadDocuments  (document ingestion)
- *   Middle → ChatInterface    (question input + conversation)
- *   Bottom → AnswerViewer     (latest RAG-generated answer)
+ *   Header  → collection selector + stats pill
+ *   Section 1 → UploadDocuments (document ingestion)
+ *   Section 2 → ChatInterface   (streaming Q&A)
+ *   Section 3 → AnswerViewer    (latest RAG answer)
  *
- * State managed here:
- *   latestResponse — forwarded to AnswerViewer on each new query
- *   docStats       — fetched from GET /api/v1/documents to show
- *                    the indexed-documents count in the header
+ * New state:
+ *   selectedCollection  — active collection
+ *   collections         — list of all collections from GET /collections
+ *   conversationId      — UUID for multi-turn memory
  */
-export default function Dashboard() {
-  const [latestResponse, setLatestResponse] = useState(null)
-  const [docStats, setDocStats]             = useState(null)
-  const [statsError, setStatsError]         = useState(false)
+import { useCallback, useEffect, useState } from 'react'
+import AnswerViewer from '../components/AnswerViewer.jsx'
+import ChatInterface from '../components/ChatInterface.jsx'
+import CollectionSelector from '../components/CollectionSelector.jsx'
+import UploadDocuments from '../components/UploadDocuments.jsx'
+import {
+  listCollections,
+  listDocuments,
+  startConversation,
+} from '../api/apiClient.js'
 
-  // Fetch document stats on mount and after each successful upload
-  const refreshStats = useCallback(async () => {
+export default function Dashboard() {
+  const [latestResponse, setLatestResponse]       = useState(null)
+  const [docStats, setDocStats]                   = useState(null)
+  const [statsError, setStatsError]               = useState(false)
+  const [collections, setCollections]             = useState([{ collection_id: 'default', total_documents: 0, total_vectors: 0 }])
+  const [collectionsLoading, setCollectionsLoading] = useState(true)
+  const [selectedCollection, setSelectedCollection] = useState('default')
+  const [conversationId, setConversationId]       = useState(null)
+
+  // Fetch collections list
+  const refreshCollections = useCallback(async () => {
     try {
-      const data = await listDocuments()
+      setCollectionsLoading(true)
+      const data = await listCollections()
+      setCollections(data.collections || [])
+    } catch {
+      // Keep existing list
+    } finally {
+      setCollectionsLoading(false)
+    }
+  }, [])
+
+  // Fetch per-collection doc stats
+  const refreshStats = useCallback(async (coll) => {
+    try {
+      const data = await listDocuments(coll || selectedCollection)
       setDocStats(data)
       setStatsError(false)
     } catch {
       setStatsError(true)
     }
+  }, [selectedCollection])
+
+  // Start a conversation session on mount
+  useEffect(() => {
+    startConversation()
+      .then(({ conversation_id }) => setConversationId(conversation_id))
+      .catch(() => {/* conversation memory works without a server-issued ID */})
   }, [])
 
   useEffect(() => {
-    refreshStats()
-  }, [refreshStats])
+    refreshCollections()
+    refreshStats(selectedCollection)
+  }, [selectedCollection]) // eslint-disable-line
 
   const handleUploadComplete = useCallback(() => {
-    refreshStats()
-  }, [refreshStats])
+    refreshStats(selectedCollection)
+    refreshCollections()
+  }, [selectedCollection, refreshStats, refreshCollections])
 
+  const handleCollectionChange = (coll) => {
+    setSelectedCollection(coll)
+    setLatestResponse(null)
+    // Start a fresh conversation for the new collection
+    startConversation()
+      .then(({ conversation_id }) => setConversationId(conversation_id))
+      .catch(() => {})
+  }
+
+  const currentColl = collections.find((c) => c.collection_id === selectedCollection)
   const hasDocuments = (docStats?.total_vectors_indexed ?? 0) > 0
 
   return (
@@ -52,25 +94,34 @@ export default function Dashboard() {
             <LogoIcon className="h-8 w-8" />
             <div>
               <h1 className="text-sm font-bold text-slate-900 leading-none">
-                Enterprise Knowledge Intelligence System
+                Enterprise Knowledge Intelligence
               </h1>
               <p className="text-[11px] text-slate-500 leading-none mt-0.5">
-                RAG · FAISS · Mistral-7B-Instruct
+                Hybrid RAG · FAISS · Mistral-7B-Instruct
               </p>
             </div>
           </div>
 
-          {/* Stats pill */}
           <div className="flex items-center gap-3">
+            {/* Collection selector */}
+            <CollectionSelector
+              collections={collections}
+              selected={selectedCollection}
+              onChange={handleCollectionChange}
+              loading={collectionsLoading}
+            />
+
+            {/* Stats pill */}
             {docStats && !statsError && (
               <div className="hidden sm:flex items-center gap-2 rounded-full border border-slate-200 bg-white px-3.5 py-1.5 text-xs text-slate-600 shadow-sm">
-                <PulseIcon className={`h-2 w-2 rounded-full ${hasDocuments ? 'bg-emerald-400' : 'bg-amber-400'}`} />
+                <PulseIcon className={`h-2 w-2 rounded-full ${hasDocuments ? 'bg-emerald-400 animate-pulse' : 'bg-amber-400'}`} />
                 <span>
                   {docStats.total_documents} doc{docStats.total_documents !== 1 ? 's' : ''} ·{' '}
-                  {docStats.total_vectors_indexed.toLocaleString()} chunks indexed
+                  {docStats.total_vectors_indexed.toLocaleString()} chunks
                 </span>
               </div>
             )}
+
             <a
               href="http://localhost:8000/docs"
               target="_blank"
@@ -86,46 +137,80 @@ export default function Dashboard() {
       {/* ── Main content ───────────────────────────────────── */}
       <main className="mx-auto max-w-5xl space-y-6 px-6 py-8">
 
-        {/* Hero intro — hidden once the user has documents */}
+        {/* Hero — hidden once documents are indexed */}
         {!hasDocuments && (
           <section className="card flex flex-col items-center gap-4 py-10 text-center">
             <div className="flex h-16 w-16 items-center justify-center rounded-2xl bg-gradient-to-br from-brand-500 to-violet-500 shadow-lg">
               <BrainIcon className="h-8 w-8 text-white" />
             </div>
             <div className="max-w-md space-y-1">
-              <h2 className="text-xl font-bold text-slate-800">
-                Welcome to Your Knowledge Base
-              </h2>
+              <h2 className="text-xl font-bold text-slate-800">Welcome to Your Knowledge Base</h2>
               <p className="text-sm text-slate-500">
                 Upload PDF or TXT documents below. Once indexed, you can ask
-                natural-language questions and receive answers grounded in your
-                documents — powered entirely by a local LLM.
+                natural-language questions powered entirely by a local Mistral-7B LLM.
               </p>
             </div>
             <div className="flex flex-wrap justify-center gap-2">
-              {['FAISS vector search', 'BAAI/bge-small-en embeddings', 'Mistral-7B-Instruct', 'No external API'].map(
-                (tag) => <span key={tag} className="badge badge-info">{tag}</span>,
-              )}
+              {[
+                'Hybrid BM25 + FAISS retrieval',
+                'Cross-encoder reranking',
+                'Streaming responses',
+                'Multi-collection support',
+                'Conversation memory',
+                'Query caching',
+              ].map((tag) => (
+                <span key={tag} className="badge badge-info">{tag}</span>
+              ))}
             </div>
           </section>
         )}
 
-        {/* ── Section 1: Upload ── */}
+        {/* Collections overview bar */}
+        {collections.length > 1 && (
+          <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+            {collections.slice(0, 4).map((c) => (
+              <button
+                key={c.collection_id}
+                type="button"
+                onClick={() => handleCollectionChange(c.collection_id)}
+                className={`rounded-xl border p-3 text-left transition-all ${
+                  c.collection_id === selectedCollection
+                    ? 'border-brand-300 bg-brand-50 shadow-sm'
+                    : 'border-slate-200 bg-white hover:border-slate-300'
+                }`}
+              >
+                <p className={`text-xs font-semibold truncate ${c.collection_id === selectedCollection ? 'text-brand-700' : 'text-slate-700'}`}>
+                  {c.collection_id}
+                </p>
+                <p className="text-[10px] text-slate-400 mt-0.5">
+                  {c.total_documents} docs · {c.total_vectors.toLocaleString()} chunks
+                </p>
+              </button>
+            ))}
+          </div>
+        )}
+
+        {/* Section 1: Upload */}
         <div>
           <SectionLabel icon={<UploadSectionIcon />} label="1 · Ingest Documents" />
-          <UploadDocuments onUploadComplete={handleUploadComplete} />
+          <UploadDocuments
+            onUploadComplete={handleUploadComplete}
+            collection={selectedCollection}
+          />
         </div>
 
-        {/* ── Section 2: Question ── */}
+        {/* Section 2: Question */}
         <div>
           <SectionLabel icon={<QuestionSectionIcon />} label="2 · Ask a Question" />
           <ChatInterface
             onAnswer={setLatestResponse}
             hasDocuments={hasDocuments}
+            collection={selectedCollection}
+            conversationId={conversationId}
           />
         </div>
 
-        {/* ── Section 3: Answer ── */}
+        {/* Section 3: Answer */}
         <div>
           <SectionLabel icon={<AnswerSectionIcon />} label="3 · Generated Answer" />
           <AnswerViewer response={latestResponse} />
@@ -135,7 +220,7 @@ export default function Dashboard() {
 
       {/* ── Footer ─────────────────────────────────────────── */}
       <footer className="mt-12 border-t border-slate-200 bg-white py-5 text-center text-xs text-slate-400">
-        Enterprise Knowledge Intelligence System · Local RAG Pipeline ·{' '}
+        Enterprise Knowledge Intelligence System · Hybrid RAG · Local LLM ·{' '}
         <a
           href="http://localhost:8000/docs"
           target="_blank"
@@ -149,15 +234,13 @@ export default function Dashboard() {
   )
 }
 
-// ── helper components ─────────────────────────────────────────────────────────
+// ── helpers ───────────────────────────────────────────────────────────────────
 
 function SectionLabel({ icon, label }) {
   return (
     <div className="mb-2.5 flex items-center gap-2 px-1">
       <span className="text-slate-400">{icon}</span>
-      <span className="text-xs font-semibold uppercase tracking-widest text-slate-400">
-        {label}
-      </span>
+      <span className="text-xs font-semibold uppercase tracking-widest text-slate-400">{label}</span>
     </div>
   )
 }
@@ -190,7 +273,7 @@ function BrainIcon({ className }) {
 }
 
 function PulseIcon({ className }) {
-  return <span className={`inline-block animate-pulse ${className}`} />
+  return <span className={`inline-block ${className}`} />
 }
 
 function UploadSectionIcon() {

@@ -1,45 +1,39 @@
 /**
  * apiClient.js
- * Centralised Axios instance for all backend communication.
+ * Centralised Axios instance + fetch-based streaming for all backend communication.
  *
- * Exports two named helpers:
- *   uploadDocument(file, onUploadProgress)  → POST /api/v1/upload
- *   queryDocuments(question, topK)          → POST /api/v1/query
- *
- * The base URL is read from the VITE_API_BASE_URL env variable so the
- * same build can target different environments.  Falls back to the local
- * FastAPI server (http://localhost:8000) when the variable is unset.
+ * Exports:
+ *   uploadDocument(file, collection, onUploadProgress) → POST /api/v1/upload
+ *   queryDocuments(question, topK, collection, conversationId) → POST /api/v1/query
+ *   streamQuery(question, onToken, onDone, topK, collection, conversationId)
+ *   listDocuments(collection) → GET /api/v1/documents
+ *   listCollections()        → GET /api/v1/collections
+ *   startConversation()      → POST /api/v1/conversations/start
+ *   evaluateRag()            → GET /api/v1/evaluate
  */
 
 import axios from 'axios'
+
+const BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000'
 
 // ---------------------------------------------------------------------------
 // Axios instance
 // ---------------------------------------------------------------------------
 
 const apiClient = axios.create({
-  baseURL: import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000',
-  timeout: 120_000, // 2-minute timeout — LLM generation can be slow
-  headers: {
-    Accept: 'application/json',
-  },
+  baseURL: BASE_URL,
+  timeout: 180_000, // 3-minute timeout — LLM generation can be slow
+  headers: { Accept: 'application/json' },
 })
-
-// ---------------------------------------------------------------------------
-// Response interceptor — uniform error shaping
-// ---------------------------------------------------------------------------
 
 apiClient.interceptors.response.use(
   (response) => response,
   (error) => {
-    // Prefer the backend's detail message; fall back to the HTTP status text
     const detail =
       error.response?.data?.detail ||
       error.response?.data?.message ||
       error.message ||
       'An unexpected error occurred.'
-
-    // Attach a clean message so callers can use error.userMessage
     error.userMessage = detail
     return Promise.reject(error)
   },
@@ -51,46 +45,157 @@ apiClient.interceptors.response.use(
 
 /**
  * Upload a single document to the backend for indexing.
- *
- * @param {File}     file               - The File object to upload.
- * @param {Function} onUploadProgress   - Axios progress callback
- *                                        ({ loaded, total, progress }).
- * @returns {Promise<{ filename, chunks_indexed, message }>}
+ * @param {File}     file
+ * @param {string}   collection
+ * @param {Function} onUploadProgress
  */
-export async function uploadDocument(file, onUploadProgress) {
+export async function uploadDocument(file, collection = 'default', onUploadProgress) {
   const form = new FormData()
   form.append('file', file)
 
-  const response = await apiClient.post('/api/v1/upload', form, {
-    headers: { 'Content-Type': 'multipart/form-data' },
-    onUploadProgress,
-  })
-
+  const response = await apiClient.post(
+    `/api/v1/upload?collection=${encodeURIComponent(collection)}`,
+    form,
+    { headers: { 'Content-Type': 'multipart/form-data' }, onUploadProgress },
+  )
   return response.data
 }
 
 /**
- * Send a question to the RAG pipeline and receive a generated answer.
- *
- * @param {string} question - Natural-language question.
- * @param {number} topK     - Number of context chunks to retrieve (default 5).
- * @returns {Promise<{ question, answer, retrieved_chunks, processing_time_seconds }>}
+ * Send a question to the RAG pipeline and receive a full answer.
+ * @param {string}        question
+ * @param {number}        topK
+ * @param {string}        collection
+ * @param {string|null}   conversationId
  */
-export async function queryDocuments(question, topK = 5) {
+export async function queryDocuments(
+  question,
+  topK = 5,
+  collection = 'default',
+  conversationId = null,
+) {
   const response = await apiClient.post('/api/v1/query', {
     question,
     top_k: topK,
+    collection,
+    conversation_id: conversationId,
   })
   return response.data
 }
 
 /**
- * Fetch the list of indexed documents plus the vector store stats.
+ * Streaming query using fetch + ReadableStream (SSE).
  *
- * @returns {Promise<{ documents, total_documents, total_vectors_indexed }>}
+ * @param {string}        question
+ * @param {Function}      onToken       — called with each token string
+ * @param {Function}      onDone        — called with final metadata object
+ * @param {number}        topK
+ * @param {string}        collection
+ * @param {string|null}   conversationId
+ * @returns {Function}    abort function to cancel the stream
  */
-export async function listDocuments() {
-  const response = await apiClient.get('/api/v1/documents')
+export function streamQuery(
+  question,
+  onToken,
+  onDone,
+  topK = 5,
+  collection = 'default',
+  conversationId = null,
+) {
+  const controller = new AbortController()
+
+  ;(async () => {
+    try {
+      const res = await fetch(`${BASE_URL}/api/v1/query/stream`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          question,
+          top_k: topK,
+          collection,
+          conversation_id: conversationId,
+        }),
+        signal: controller.signal,
+      })
+
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({ detail: res.statusText }))
+        onDone?.({ error: err.detail || 'Stream request failed' })
+        return
+      }
+
+      const reader = res.body.getReader()
+      const decoder = new TextDecoder()
+
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
+
+        const text = decoder.decode(value, { stream: true })
+        const lines = text.split('\n')
+
+        for (const line of lines) {
+          if (!line.startsWith('data: ')) continue
+          const payload = line.slice(6).trim()
+          if (!payload) continue
+
+          try {
+            const data = JSON.parse(payload)
+            if (data.token !== undefined) {
+              onToken?.(data.token)
+            } else if (data.done) {
+              onDone?.({ chunks: data.retrieved_chunks })
+            } else if (data.error) {
+              onDone?.({ error: data.error })
+            }
+          } catch {
+            // Ignore malformed SSE lines
+          }
+        }
+      }
+    } catch (err) {
+      if (err.name !== 'AbortError') {
+        onDone?.({ error: err.message })
+      }
+    }
+  })()
+
+  return () => controller.abort()
+}
+
+/**
+ * Fetch the list of indexed documents plus vector store stats.
+ * @param {string} collection
+ */
+export async function listDocuments(collection = 'default') {
+  const response = await apiClient.get(
+    `/api/v1/documents?collection=${encodeURIComponent(collection)}`,
+  )
+  return response.data
+}
+
+/**
+ * List all collections with document and vector counts.
+ */
+export async function listCollections() {
+  const response = await apiClient.get('/api/v1/collections')
+  return response.data
+}
+
+/**
+ * Start a new conversation session.
+ * @returns {Promise<{ conversation_id: string }>}
+ */
+export async function startConversation() {
+  const response = await apiClient.post('/api/v1/conversations/start')
+  return response.data
+}
+
+/**
+ * Fetch offline RAG evaluation metrics.
+ */
+export async function evaluateRag() {
+  const response = await apiClient.get('/api/v1/evaluate')
   return response.data
 }
 

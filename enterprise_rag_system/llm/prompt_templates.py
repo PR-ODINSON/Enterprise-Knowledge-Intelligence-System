@@ -20,7 +20,7 @@ or information outside the context below.
 
 Context:
 {context}
-
+{history_block}
 Question: {question}
 
 Provide a clear, factual, and concise answer based only on the context above. \
@@ -62,17 +62,16 @@ def build_rag_prompt(
     context: str,
     question: str,
     use_instruction_format: bool = True,
+    history: str = "",
 ) -> str:
     """
     Construct a complete RAG prompt from retrieved context and a user question.
 
     Args:
-        context:                The retrieved document context (pre-formatted
-                                from ``Retriever.retrieve_context()``).
+        context:                The retrieved document context.
         question:               The user's natural-language question.
-        use_instruction_format: When ``True`` (default), uses the Mistral-style
-                                ``[INST]`` instruction format. Set to ``False``
-                                for plain completion models.
+        use_instruction_format: ``True`` for Mistral [INST] format.
+        history:                Optional formatted conversation history string.
 
     Returns:
         A fully formatted prompt string ready for LLM inference.
@@ -82,7 +81,15 @@ def build_rag_prompt(
         if use_instruction_format
         else PLAIN_PROMPT_TEMPLATE
     )
-    return template.format(context=context, question=question)
+    history_block = (
+        f"\nPrevious conversation:\n{history}\n"
+        if history.strip() else ""
+    )
+    return template.format(
+        context=context,
+        question=question,
+        history_block=history_block,
+    )
 
 
 def build_summary_prompt(text: str) -> str:
