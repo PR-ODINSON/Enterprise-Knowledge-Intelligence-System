@@ -170,6 +170,57 @@ npm install
 
 ---
 
+## 🐳 Docker Deployment (Development)
+
+This repository now includes a Docker-based development setup for both backend and frontend.
+
+### Included Docker Files
+- `Dockerfile.backend` (Python 3.11 + FastAPI/Uvicorn)
+- `Dockerfile.frontend` (Node 18 + Vite dev server)
+- `docker-compose.yml` (orchestrates both services)
+
+### Container Services
+
+#### Backend (FastAPI)
+- Base image: Python 3.11
+- Installs dependencies from `enterprise_rag_system/requirements.txt`
+- Runs: `uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload`
+- Exposes: `8000`
+- GPU-enabled via NVIDIA container runtime
+
+#### Frontend (React + Vite)
+- Base image: Node 18
+- Installs npm dependencies
+- Runs: `npm run dev -- --host 0.0.0.0 --port 3000`
+- Exposes: `3000`
+
+### Start Both Services
+
+From the project root, run:
+
+```bash
+docker compose up --build
+```
+
+Then access:
+- Frontend: `http://localhost:3000`
+- Backend API: `http://localhost:8000`
+- Swagger Docs: `http://localhost:8000/docs`
+
+### Development Volume Mounts
+
+The compose setup mounts the project directory into both containers for live development:
+- `./:/workspace`
+
+### GPU Prerequisites (Backend)
+
+For backend GPU access, ensure Docker can use NVIDIA GPUs:
+- NVIDIA GPU driver installed
+- NVIDIA Container Toolkit installed
+- Docker configured to run GPU workloads
+
+---
+
 ## ▶️ Running the Pipeline
 
 **1. Launch the Backend Server:**
