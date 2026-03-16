@@ -1,0 +1,34 @@
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
+    working_dir: /workspace/enterprise_rag_system
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./:/workspace
+    environment:
+      NVIDIA_VISIBLE_DEVICES: all
+      NVIDIA_DRIVER_CAPABILITIES: compute,utility
+    gpus: all
+
+  frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile.frontend
+    working_dir: /workspace/frontend
+    command: npm run dev -- --host 0.0.0.0 --port 3000
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./:/workspace
+      - frontend_node_modules:/workspace/frontend/node_modules
+    depends_on:
+      - backend
+    environment:
+      VITE_API_PROXY_TARGET: http://backend:8000
+
+volumes:
+  frontend_node_modules:

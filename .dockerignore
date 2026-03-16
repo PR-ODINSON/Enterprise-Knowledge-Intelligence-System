@@ -1,0 +1,20 @@
+# VCS
+.git
+.gitignore
+
+# Python
+**/__pycache__/
+**/*.pyc
+**/*.pyo
+**/*.pyd
+
+# Node
+**/node_modules/
+frontend/dist/
+
+# Local runtime artifacts
+**/.pytest_cache/
+**/.mypy_cache/
+**/.DS_Store
+**/Thumbs.db
+enterprise_rag_system/logs/
